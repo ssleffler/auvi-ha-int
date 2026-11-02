@@ -1,0 +1,15 @@
+{
+  "domain": "auvi_nvr",
+  "name": "Auvi NVR",
+  "after_dependencies": ["stream"],
+  "codeowners": ["@ssleffler"],
+  "config_flow": true,
+  "dependencies": ["http", "frontend", "websocket_api"],
+  "documentation": "https://github.com/ssleffler/auvi-ha-int",
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/ssleffler/auvi-ha-int/issues",
+  "loggers": ["custom_components.auvi_nvr"],
+  "requirements": [],
+  "version": "0.1.0"
+}

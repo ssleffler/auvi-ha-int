@@ -1,0 +1,108 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to an Auvi NVR recorder",
+        "description": "The recorder's local web UI runs over HTTPS (port 8443 by default) behind the admin login you created on the recorder. The RTSP password is the one set on the recorder's RTSP tab; it turns shared streams into camera entities.",
+        "data": {
+          "host": "Recorder address",
+          "port": "HTTPS port",
+          "username": "Username",
+          "password": "Admin password",
+          "rtsp_password": "RTSP passthrough password (optional)",
+          "stream_class": "Preferred stream for camera entities"
+        },
+        "data_description": {
+          "host": "IP address or host name on your LAN, e.g. 10.0.3.2",
+          "username": "The recorder has one local account, admin",
+          "rtsp_password": "Leave empty to add no camera entities"
+        }
+      },
+      "trust_cert": {
+        "title": "Trust this recorder",
+        "description": "The recorder at {host} issues its own certificate. Its root fingerprint (SHA-256) is\n\n{fingerprint}\n\nCompare it with the Access tab on the recorder's console, then submit to trust it. Only this root is trusted from now on."
+      },
+      "reauth_confirm": {
+        "title": "Sign in again",
+        "description": "The recorder at {host} refused the stored admin password.",
+        "data": {
+          "password": "Admin password"
+        }
+      },
+      "reconfigure": {
+        "title": "Change the recorder's address",
+        "data": {
+          "host": "Recorder address",
+          "port": "HTTPS port",
+          "password": "Admin password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "The recorder could not be reached. Check the address, the port and the firewall rule for the HTTPS port.",
+      "invalid_auth": "Wrong admin password.",
+      "no_password_set": "The recorder has no admin password yet. Open its web UI once and create the password, then try again.",
+      "cert_error": "The recorder's certificate could not be used.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "already_configured": "This recorder is already set up.",
+      "reauth_successful": "Signed in again.",
+      "reconfigure_successful": "Recorder updated.",
+      "unique_id_mismatch": "That address belongs to a different recorder."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Auvi NVR options",
+        "data": {
+          "scan_interval": "Polling interval (seconds)",
+          "rtsp_password": "RTSP passthrough password",
+          "stream_class": "Preferred stream for camera entities",
+          "panel_require_admin": "Only administrators may open the sidebar panel"
+        }
+      }
+    }
+  },
+  "selector": {
+    "stream_class": {
+      "options": {
+        "sub": "Sub stream (lighter)",
+        "main": "Main stream (full resolution)"
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "cloud_connected": { "name": "Cloud connected" },
+      "rtsp_listening": { "name": "RTSP passthrough" },
+      "connected": { "name": "Connected" },
+      "recording": { "name": "Recording" },
+      "rtsp_shared": { "name": "Shared over RTSP" }
+    },
+    "sensor": {
+      "status": {
+        "name": "Status",
+        "state": {
+          "ok": "OK",
+          "degraded": "Degraded",
+          "down": "Down",
+          "unknown": "Unknown"
+        }
+      },
+      "disk_free": { "name": "Storage free" },
+      "projected_hours": { "name": "Retention runway" },
+      "uptime": { "name": "Uptime" },
+      "version": { "name": "Agent version" },
+      "camera_count": { "name": "Cameras" },
+      "fps": { "name": "Frame rate" },
+      "bitrate": { "name": "Bitrate" }
+    }
+  },
+  "exceptions": {
+    "update_failed": {
+      "message": "Polling the recorder failed: {error}"
+    }
+  }
+}
