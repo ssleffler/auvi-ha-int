@@ -176,9 +176,9 @@ class AuviProxyView(HomeAssistantView):
         """Forward HEAD."""
         return await self._handle(request, entry_id, path)
 
-    async def options(self, request: web.Request, entry_id: str, path: str) -> web.StreamResponse:
-        """Forward OPTIONS."""
-        return await self._handle(request, entry_id, path)
+    # No OPTIONS handler: Home Assistant attaches its own CORS preflight
+    # handler to every view route and refuses a second one at registration.
+    # The framed pages are same-origin and never preflight.
 
     # ---- helpers -----------------------------------------------------------
 
