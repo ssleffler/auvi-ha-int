@@ -1,4 +1,4 @@
-"""Sensors: recorder status, storage, uptime, version; camera status and rates."""
+"""Sensors: recorder status, storage, uptime, version; camera status, rates, last event."""
 
 from __future__ import annotations
 
@@ -21,12 +21,14 @@ from homeassistant.const import (
     UnitOfTime,
 )
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import AuviConfigEntry
-from .const import DEFAULT_PORT, DEFAULT_STREAM_CLASS, RECORDER_STATUSES
+from .const import DEFAULT_PORT, DEFAULT_STREAM_CLASS, RECORDER_STATUSES, SIGNAL_EVENT
 from .coordinator import AuviCoordinator, AuviData
 from .entity import AuviCameraEntity, AuviRecorderEntity, camera_device_info, recorder_device_info
+from .events import AuviEvent, AuviEventBridge
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -41,6 +43,15 @@ class AuviCameraSensorDescription(SensorEntityDescription):
     """A per-camera value."""
 
     value_fn: Callable[[AuviData, str], Any]
+
+
+@dataclass(frozen=True, kw_only=True)
+class AuviEventSensorDescription(SensorEntityDescription):
+    """A per-camera value taken from the last event the recorder posted."""
+
+    # Returns (state, attributes) for an event, or None when the event
+    # does not concern this sensor (the previous value stays).
+    event_fn: Callable[[AuviEvent], tuple[Any, dict[str, Any]] | None]
 
 
 def _status(value: Any) -> str | None:
@@ -60,6 +71,19 @@ def _first_stream(d: AuviData, cam: str) -> dict[str, Any]:
         or d.stream_health(cam, "main")
         or {}
     )
+
+
+def _last_event(event: AuviEvent) -> tuple[Any, dict[str, Any]]:
+    return event.event_type, event.attributes()
+
+
+def _last_plate(event: AuviEvent) -> tuple[Any, dict[str, Any]] | None:
+    plate = event.plate
+    if not plate:
+        return None
+    attrs = event.attributes()
+    attrs.pop("plate", None)
+    return plate, attrs
 
 
 RECORDER_DESCRIPTIONS: tuple[AuviRecorderSensorDescription, ...] = (
@@ -134,6 +158,19 @@ CAMERA_DESCRIPTIONS: tuple[AuviCameraSensorDescription, ...] = (
     ),
 )
 
+EVENT_DESCRIPTIONS: tuple[AuviEventSensorDescription, ...] = (
+    AuviEventSensorDescription(
+        key="last_event",
+        icon="mdi:motion-sensor",
+        event_fn=_last_event,
+    ),
+    AuviEventSensorDescription(
+        key="last_plate",
+        icon="mdi:card-text",
+        event_fn=_last_plate,
+    ),
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: AuviConfigEntry, async_add_entities: AddEntitiesCallback
@@ -152,7 +189,7 @@ async def async_setup_entry(
 
     @callback
     def _sync() -> None:
-        new: list[AuviCameraSensor] = []
+        new: list[SensorEntity] = []
         for cam_id in coordinator.data.cameras:
             if cam_id in known:
                 continue
@@ -161,6 +198,10 @@ async def async_setup_entry(
             new.extend(
                 AuviCameraSensor(coordinator, rt.uid, cam_id, desc, device)
                 for desc in CAMERA_DESCRIPTIONS
+            )
+            new.extend(
+                AuviEventSensor(coordinator, rt.uid, cam_id, desc, device, entry.entry_id, rt.events)
+                for desc in EVENT_DESCRIPTIONS
             )
         if new:
             async_add_entities(new)
@@ -202,3 +243,48 @@ class AuviCameraSensor(AuviCameraEntity, SensorEntity):
     def native_value(self) -> Any:
         """Current value."""
         return self.entity_description.value_fn(self.coordinator.data, self.camera_id)
+
+
+class AuviEventSensor(AuviCameraEntity, SensorEntity):
+    """Per-camera value from the last event the recorder posted."""
+
+    entity_description: AuviEventSensorDescription
+
+    def __init__(
+        self, coordinator: AuviCoordinator, uid: str, camera_id: str,
+        desc: AuviEventSensorDescription, device, entry_id: str, events: AuviEventBridge,
+    ) -> None:
+        """Initialise; seeds from an event received earlier in this run."""
+        super().__init__(coordinator, uid, camera_id, desc.key, device)
+        self.entity_description = desc
+        self._entry_id = entry_id
+        self._attr_native_value: Any = None
+        self._attr_extra_state_attributes: dict[str, Any] = {}
+        if (last := events.last.get(camera_id)) is not None:
+            self._apply(last)
+
+    async def async_added_to_hass(self) -> None:
+        """Listen for the recorder's events."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, SIGNAL_EVENT.format(self._entry_id), self._on_event
+            )
+        )
+
+    def _apply(self, event: AuviEvent) -> bool:
+        result = self.entity_description.event_fn(event)
+        if result is None:
+            return False
+        self._attr_native_value, self._attr_extra_state_attributes = result
+        return True
+
+    @callback
+    def _on_event(self, event: AuviEvent) -> None:
+        if event.camera_id == self.camera_id and self._apply(event):
+            self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> Any:
+        """The last matching event's value."""
+        return self._attr_native_value

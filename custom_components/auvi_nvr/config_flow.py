@@ -31,16 +31,24 @@ from .api import (
 from .const import (
     CONF_CA_FINGERPRINT,
     CONF_CA_PEM,
+    CONF_EVENT_HOLD,
+    CONF_EVENTS_BASE_URL,
+    CONF_EVENTS_ENABLED,
+    CONF_EVENTS_INSECURE_TLS,
+    CONF_EVENTS_LOCAL_ONLY,
     CONF_PANEL_REQUIRE_ADMIN,
     CONF_RTSP_PASSWORD,
     CONF_SCAN_INTERVAL,
     CONF_STREAM_CLASS,
+    DEFAULT_EVENT_HOLD,
     DEFAULT_PORT,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_STREAM_CLASS,
     DEFAULT_USERNAME,
     DOMAIN,
+    MAX_EVENT_HOLD,
     MAX_SCAN_INTERVAL,
+    MIN_EVENT_HOLD,
     MIN_SCAN_INTERVAL,
     STREAM_CLASSES,
 )
@@ -159,6 +167,11 @@ class AuviConfigFlow(ConfigFlow, domain=DOMAIN):
             CONF_STREAM_CLASS: p.get(CONF_STREAM_CLASS, DEFAULT_STREAM_CLASS),
             CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
             CONF_PANEL_REQUIRE_ADMIN: False,
+            CONF_EVENTS_ENABLED: True,
+            CONF_EVENT_HOLD: DEFAULT_EVENT_HOLD,
+            CONF_EVENTS_BASE_URL: "",
+            CONF_EVENTS_LOCAL_ONLY: True,
+            CONF_EVENTS_INSECURE_TLS: False,
         }
         return self.async_create_entry(title=f"Auvi NVR {hostname}", data=data, options=options)
 
@@ -296,6 +309,9 @@ class AuviOptionsFlow(OptionsFlowWithReload):
     ) -> ConfigFlowResult:
         """Show and save the options."""
         if user_input is not None:
+            user_input[CONF_EVENTS_BASE_URL] = str(
+                user_input.get(CONF_EVENTS_BASE_URL) or ""
+            ).strip().rstrip("/")
             return self.async_create_entry(data=user_input)
         schema = vol.Schema(
             {
@@ -305,6 +321,13 @@ class AuviOptionsFlow(OptionsFlowWithReload):
                 vol.Optional(CONF_RTSP_PASSWORD, default=""): PASSWORD_SELECTOR,
                 vol.Required(CONF_STREAM_CLASS, default=DEFAULT_STREAM_CLASS): STREAM_SELECTOR,
                 vol.Required(CONF_PANEL_REQUIRE_ADMIN, default=False): bool,
+                vol.Required(CONF_EVENTS_ENABLED, default=True): bool,
+                vol.Required(CONF_EVENT_HOLD, default=DEFAULT_EVENT_HOLD): vol.All(
+                    vol.Coerce(int), vol.Range(min=MIN_EVENT_HOLD, max=MAX_EVENT_HOLD)
+                ),
+                vol.Optional(CONF_EVENTS_BASE_URL, default=""): str,
+                vol.Required(CONF_EVENTS_LOCAL_ONLY, default=True): bool,
+                vol.Required(CONF_EVENTS_INSECURE_TLS, default=False): bool,
             }
         )
         return self.async_show_form(

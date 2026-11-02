@@ -60,7 +60,17 @@
           "scan_interval": "Polling interval (seconds)",
           "rtsp_password": "RTSP passthrough password",
           "stream_class": "Preferred stream for camera entities",
-          "panel_require_admin": "Only administrators may open the sidebar panel"
+          "panel_require_admin": "Only administrators may open the sidebar panel",
+          "events_enabled": "Real-time events (the recorder posts every detection to Home Assistant)",
+          "event_hold": "Detection sensors stay on for (seconds)",
+          "events_base_url": "Home Assistant URL the recorder should post to (optional)",
+          "events_local_only": "Accept event posts from the local network only",
+          "events_insecure_tls": "Let the recorder skip certificate checks when posting over HTTPS"
+        },
+        "data_description": {
+          "events_enabled": "Installs one rule per camera on the recorder's Rules tab; switching it off removes them again.",
+          "events_base_url": "Leave empty to use Home Assistant's internal URL. Set it when the recorder must reach Home Assistant another way, e.g. http://10.0.1.5:8123",
+          "events_insecure_tls": "Only for a Home Assistant behind a self-signed certificate"
         }
       }
     }
@@ -73,13 +83,40 @@
       }
     }
   },
+  "device_automation": {
+    "trigger_type": {
+      "activity": "Activity (any object or analytic event)",
+      "motion": "Motion",
+      "person": "Person detected",
+      "vehicle": "Vehicle detected",
+      "animal": "Animal detected",
+      "face": "Face detected",
+      "license_plate": "License plate read",
+      "line_cross": "Line crossed",
+      "loiter": "Loitering",
+      "intrusion": "Intrusion",
+      "view_change": "View changed",
+      "tamper": "Tampering"
+    }
+  },
   "entity": {
     "binary_sensor": {
       "cloud_connected": { "name": "Cloud connected" },
       "rtsp_listening": { "name": "RTSP passthrough" },
       "connected": { "name": "Connected" },
       "recording": { "name": "Recording" },
-      "rtsp_shared": { "name": "Shared over RTSP" }
+      "rtsp_shared": { "name": "Shared over RTSP" },
+      "activity": { "name": "Activity" },
+      "person": { "name": "Person" },
+      "vehicle": { "name": "Vehicle" },
+      "animal": { "name": "Animal" },
+      "license_plate": { "name": "License plate" },
+      "motion": { "name": "Motion" },
+      "face": { "name": "Face" },
+      "line_cross": { "name": "Line crossed" },
+      "loiter": { "name": "Loitering" },
+      "intrusion": { "name": "Intrusion" },
+      "tamper": { "name": "Tamper" }
     },
     "sensor": {
       "status": {
@@ -97,7 +134,9 @@
       "version": { "name": "Agent version" },
       "camera_count": { "name": "Cameras" },
       "fps": { "name": "Frame rate" },
-      "bitrate": { "name": "Bitrate" }
+      "bitrate": { "name": "Bitrate" },
+      "last_event": { "name": "Last event" },
+      "last_plate": { "name": "Last license plate" }
     }
   },
   "exceptions": {

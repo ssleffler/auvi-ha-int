@@ -364,3 +364,45 @@ class AuviClient:
             timeout=ClientTimeout(total=None, sock_connect=10, sock_read=None),
             auto_decompress=False,
         )
+
+    # ---- rules (ADR-0543) ---------------------------------------------------
+
+    async def get_rules(self) -> dict[str, Any]:
+        """The recorder's rules document: rules of every origin, secrets, vocabularies."""
+        return await self.api_json("GET", "/api/v1/local/rules")
+
+    async def create_rule(self, rule: dict[str, Any]) -> dict[str, Any]:
+        """Create a recorder-local rule; returns it with its id."""
+        return await self.api_json("POST", "/api/v1/local/rules", json=rule)
+
+    async def update_rule(self, rule_id: str, rule: dict[str, Any]) -> dict[str, Any]:
+        """Replace a recorder-local rule."""
+        return await self.api_json("PUT", f"/api/v1/local/rules/{rule_id}", json=rule)
+
+    async def delete_rule(self, rule_id: str) -> None:
+        """Remove a recorder-local rule (already gone is fine)."""
+        resp = await self.send("DELETE", f"/api/v1/local/rules/{rule_id}")
+        try:
+            if resp.status == 401:
+                raise AuviAuthError("the recorder refused the admin session")
+            if resp.status >= 400 and resp.status != 404:
+                text = (await resp.text()).strip()
+                raise AuviConnectionError(f"DELETE rule {rule_id}: HTTP {resp.status} {text[:200]}")
+        finally:
+            resp.release()
+
+    async def set_secret(self, name: str, value: str) -> None:
+        """Store a webhook secret in the recorder keystore (value never echoed)."""
+        await self.api_json("PUT", f"/api/v1/local/secrets/{name}", json={"value": value})
+
+    async def delete_secret(self, name: str) -> None:
+        """Remove a webhook secret (already gone is fine)."""
+        resp = await self.send("DELETE", f"/api/v1/local/secrets/{name}")
+        try:
+            if resp.status == 401:
+                raise AuviAuthError("the recorder refused the admin session")
+            if resp.status >= 400 and resp.status != 404:
+                text = (await resp.text()).strip()
+                raise AuviConnectionError(f"DELETE secret {name}: HTTP {resp.status} {text[:200]}")
+        finally:
+            resp.release()
