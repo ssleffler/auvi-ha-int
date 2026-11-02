@@ -24,6 +24,7 @@ from .const import (
     RECORDER_MODEL,
 )
 from .coordinator import AuviCoordinator
+from .entity import ensure_camera_devices
 from .panel import PanelSession, async_maybe_remove_panel, async_setup_panel
 
 LOGGER = logging.getLogger(__package__)
@@ -84,6 +85,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: AuviConfigEntry) -> bool
     )
     entry.runtime_data = AuviRuntimeData(
         client=client, coordinator=coordinator, uid=uid, hub_device_id=hub.id
+    )
+
+    # Camera devices are created here (and refreshed on every poll) so the
+    # link to the recorder is made from the integration's own code.
+    ensure_camera_devices(hass, entry, uid, hub.id, coordinator.data)
+    entry.async_on_unload(
+        coordinator.async_add_listener(
+            lambda: ensure_camera_devices(hass, entry, uid, hub.id, coordinator.data)
+        )
     )
 
     await async_setup_panel(hass, entry)

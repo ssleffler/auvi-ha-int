@@ -2,23 +2,70 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER, RECORDER_MODEL
 from .coordinator import AuviCoordinator, AuviData
 
-def _via_kwargs(hub_device_id: str, uid: str) -> dict[str, Any]:
-    """Link a camera device to the recorder.
+_VIA_DEVICE_ID: bool | None = None
 
-    `via_device` is accepted by every supported release (deprecated with a
-    warning for custom integrations from 2026.8, removed 2027.8); the
-    `via_device_id` replacement is adopted once the minimum HA version
-    carries it. hub_device_id is kept for that switch.
+
+def _registry_takes_via_device_id() -> bool:
+    """Whether this Home Assistant's device registry has via_device_id (2026.8+)."""
+    global _VIA_DEVICE_ID  # noqa: PLW0603
+    if _VIA_DEVICE_ID is None:
+        params = inspect.signature(dr.DeviceRegistry.async_get_or_create).parameters
+        _VIA_DEVICE_ID = "via_device_id" in params
+    return _VIA_DEVICE_ID
+
+
+def camera_identifier(uid: str, camera_id: str) -> tuple[str, str]:
+    """The registry identifier of a camera device."""
+    return (DOMAIN, f"{uid}_{camera_id}")
+
+
+@callback
+def ensure_camera_devices(
+    hass: HomeAssistant, entry: ConfigEntry, uid: str, hub_device_id: str, data: AuviData
+) -> None:
+    """Create or refresh one device per camera, linked to the recorder.
+
+    Done from the integration's own code rather than through the entities'
+    DeviceInfo: the link to the recorder uses `via_device_id` where the
+    registry has it and the deprecated `via_device` elsewhere, and Home
+    Assistant only tolerates the deprecated form when the call is
+    attributable to a custom integration frame.
     """
-    return {"via_device": (DOMAIN, uid)}
+    registry = dr.async_get(hass)
+    link: dict[str, Any] = (
+        {"via_device_id": hub_device_id}
+        if _registry_takes_via_device_id()
+        else {"via_device": (DOMAIN, uid)}
+    )
+    for camera_id, cam in data.cameras.items():
+        info = data.infos.get(camera_id) or {}
+        kwargs: dict[str, Any] = {
+            "name": cam.get("name") or info.get("name") or camera_id,
+            "manufacturer": info.get("make") or None,
+            "model": info.get("model") or None,
+            "sw_version": info.get("firmware") or None,
+            "serial_number": info.get("serial") or None,
+            "configuration_url": info.get("web_admin_url") or None,
+        }
+        kwargs = {k: v for k, v in kwargs.items() if v is not None}
+        registry.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={camera_identifier(uid, camera_id)},
+            **kwargs,
+            **link,
+        )
 
 
 def recorder_device_info(uid: str, data: AuviData, host: str, port: int, title: str) -> DeviceInfo:
@@ -33,24 +80,15 @@ def recorder_device_info(uid: str, data: AuviData, host: str, port: int, title: 
     )
 
 
-def camera_device_info(
-    uid: str, hub_device_id: str, data: AuviData, camera_id: str
-) -> DeviceInfo:
-    """DeviceInfo for one camera, linked to the recorder."""
+def camera_device_info(uid: str, hub_device_id: str, data: AuviData, camera_id: str) -> DeviceInfo:
+    """DeviceInfo for one camera: identifiers only, the device itself is
+    created by ensure_camera_devices (which owns the recorder link)."""
     cam = data.cameras.get(camera_id) or {}
     info = data.infos.get(camera_id) or {}
-    kwargs: dict[str, Any] = {
-        "identifiers": {(DOMAIN, f"{uid}_{camera_id}")},
-        "name": cam.get("name") or info.get("name") or camera_id,
-        "manufacturer": info.get("make") or None,
-        "model": info.get("model") or None,
-        "sw_version": info.get("firmware") or None,
-        "serial_number": info.get("serial") or None,
-        "configuration_url": info.get("web_admin_url") or None,
-    }
-    kwargs = {k: v for k, v in kwargs.items() if v is not None}
-    kwargs.update(_via_kwargs(hub_device_id, uid))
-    return DeviceInfo(**kwargs)
+    return DeviceInfo(
+        identifiers={camera_identifier(uid, camera_id)},
+        name=cam.get("name") or info.get("name") or camera_id,
+    )
 
 
 class AuviRecorderEntity(CoordinatorEntity[AuviCoordinator]):
