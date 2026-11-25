@@ -24,10 +24,14 @@ session the integration runs on.
 from __future__ import annotations
 
 import asyncio
+import codecs
+from collections.abc import Awaitable, Callable
+import json
 import logging
 import re
 import time
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 import aiohttp
 from aiohttp import web
@@ -84,6 +88,44 @@ INTERCEPT_NOOP = {("POST", "api/v1/local/login")}
 INTERCEPT_SESSION = {("POST", "api/v1/auth/login"), ("POST", "api/v1/auth/refresh")}
 PANEL_TOKEN = "home-assistant-panel"
 VIEWER_MARKER = b"early-auth.js"
+# The viewer page holds one never-ending event stream per live camera tile
+# (GET /api/v1/detections/<camera>). The recorder serves HTTP/2, where that
+# is free; Home Assistant serves HTTP/1.1, where a browser allows six
+# connections per host, so six tiles left none for Home Assistant's own
+# pages. This script, added to the page, carries those streams over one
+# WebSocket (not counted in the six) to DETECTIONS_WS below.
+DETECTIONS_WS = "_detections"
+MAX_DETECTION_STREAMS = 64
+VIEWER_STREAMS = rb"""<script>(()=>{
+const base=location.pathname.replace(/\/local\/.*$/,"");
+const re=/\/api\/v1\/detections\/([^\/]+)$/;
+const real=window.fetch,enc=new TextEncoder(),subs=new Map();
+let ws=null;
+const say=m=>{if(ws&&ws.readyState===1)ws.send(JSON.stringify(m))};
+const end=cam=>{const s=subs.get(cam);subs.delete(cam);if(s)for(const c of s){try{c.close()}catch(e){}}};
+const connect=()=>{
+ws=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+base+"/_detections");
+ws.onopen=()=>{for(const cam of subs.keys())say({sub:cam})};
+ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.end)return end(m.cam);
+const s=subs.get(m.cam);if(s)for(const c of s)c.enqueue(enc.encode(m.data))};
+ws.onclose=()=>{ws=null;for(const cam of [...subs.keys()])end(cam)};
+};
+window.fetch=function(input,init){
+let m=null;
+try{if(typeof input==="string"&&String(new Headers(init&&init.headers).get("accept")).includes("text/event-stream"))
+m=re.exec(new URL(input,location.href).pathname)}catch(e){}
+if(!m)return real.apply(this,arguments);
+const cam=decodeURIComponent(m[1]),signal=init&&init.signal;
+let ctl;
+const drop=()=>{const s=subs.get(cam);if(s&&s.delete(ctl)&&!s.size){subs.delete(cam);say({unsub:cam})}};
+const body=new ReadableStream({start(c){ctl=c},cancel:drop});
+if(!subs.has(cam)){subs.set(cam,new Set());say({sub:cam})}
+subs.get(cam).add(ctl);
+if(!ws)connect();
+if(signal)signal.addEventListener("abort",()=>{drop();try{ctl.error(new DOMException("Aborted","AbortError"))}catch(e){}},{once:true});
+return Promise.resolve(new Response(body,{status:200,headers:{"Content-Type":"text/event-stream"}}));
+};
+})();</script>"""
 VIEWER_SEED = (
     b'<script>try{localStorage.setItem("auvi.refresh_token","' + PANEL_TOKEN.encode()
     + b'");localStorage.setItem("auvi.auth_provider","local")}catch(e){}</script>'
@@ -116,7 +158,61 @@ def seed_viewer_session(html: bytes) -> bytes:
     head = re.search(rb"<head[^>]*>", html)
     if head is None:
         return html
-    return html[: head.end()] + VIEWER_SEED + html[head.end():]
+    return html[: head.end()] + VIEWER_SEED + VIEWER_STREAMS + html[head.end():]
+
+
+async def relay_detections(
+    ws: web.WebSocketResponse,
+    open_stream: Callable[[str], Awaitable[aiohttp.ClientResponse]],
+) -> None:
+    """Serve one page's detection streams over its WebSocket.
+
+    The page sends {"sub": camera} and {"unsub": camera}; each subscribed
+    camera's event stream comes back as {"cam", "data"} text pieces, and
+    {"cam", "end": true} when the recorder ends it (the page subscribes
+    again with its own backoff).
+    """
+    tasks: dict[str, asyncio.Task[None]] = {}
+
+    async def pump(cam: str) -> None:
+        try:
+            upstream = await open_stream(cam)
+            try:
+                if upstream.status == 200:
+                    decode = codecs.getincrementaldecoder("utf-8")("replace").decode
+                    async for chunk in upstream.content.iter_any():
+                        await ws.send_json({"cam": cam, "data": decode(chunk)})
+            finally:
+                upstream.close()
+            await ws.send_json({"cam": cam, "end": True})
+        except (
+            AuviAuthError, AuviConnectionError, aiohttp.ClientError, ConnectionError,
+            asyncio.TimeoutError, RuntimeError,
+        ) as err:
+            LOGGER.debug("detection stream for %s ended: %s", cam, err)
+
+    try:
+        async for msg in ws:
+            if msg.type is not aiohttp.WSMsgType.TEXT:
+                continue
+            try:
+                req = json.loads(msg.data)
+            except ValueError:
+                continue
+            if not isinstance(req, dict):
+                continue
+            if task := tasks.pop(str(req.get("unsub") or ""), None):
+                task.cancel()
+            cam = req.get("sub")
+            if not isinstance(cam, str) or not cam:
+                continue
+            if (cam not in tasks and len(tasks) < MAX_DETECTION_STREAMS) or (
+                cam in tasks and tasks[cam].done()
+            ):
+                tasks[cam] = asyncio.create_task(pump(cam))
+    finally:
+        for task in tasks.values():
+            task.cancel()
 
 
 def rewrite_location(value: str, prefix: str, origin: str) -> str:
@@ -272,6 +368,17 @@ class AuviProxyView(HomeAssistantView):
             return web.json_response({"error": "not found"}, status=404)
 
         client = entry.runtime_data.client
+        if key == ("GET", DETECTIONS_WS):
+            ws = web.WebSocketResponse(heartbeat=30)
+            await ws.prepare(request)
+            await relay_detections(
+                ws,
+                lambda cam: client.proxy_request(
+                    "GET", "/api/v1/detections/" + quote(cam, safe=""), "",
+                    {"Accept": EVENT_STREAM}, None,
+                ),
+            )
+            return ws
         if request.headers.get("Upgrade", "").lower() == "websocket":
             return await self._bridge_websocket(request, client, "/" + path)
 
