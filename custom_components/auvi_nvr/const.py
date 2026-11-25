@@ -5,7 +5,7 @@ from __future__ import annotations
 from homeassistant.const import Platform
 
 DOMAIN = "auvi_nvr"
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 MANUFACTURER = "Auvi"
 RECORDER_MODEL = "Auvi Video Recorder"
 

@@ -7,7 +7,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -29,6 +29,52 @@ def _registry_takes_via_device_id() -> bool:
 def camera_identifier(uid: str, camera_id: str) -> tuple[str, str]:
     """The registry identifier of a camera device."""
     return (DOMAIN, f"{uid}_{camera_id}")
+
+
+@callback
+def renamed_cameras(hass: HomeAssistant, uid: str, data: AuviData) -> list[tuple[str, str]]:
+    """(old id, new id) of cameras the registry still keeps under an old id.
+
+    Recorders from 26.11 rename every camera from its slug to a UUID once
+    and report the former id as `legacy_camera_id` in the health document.
+    """
+    registry = dr.async_get(hass)
+    out: list[tuple[str, str]] = []
+    for cam in data.health.get("cameras") or []:
+        new, old = str(cam.get("camera_id") or ""), str(cam.get("legacy_camera_id") or "")
+        if new and old and old != new and registry.async_get_device(
+            identifiers={camera_identifier(uid, old)}
+        ):
+            out.append((old, new))
+    return out
+
+
+@callback
+def migrate_renamed_cameras(hass: HomeAssistant, uid: str, data: AuviData) -> int:
+    """Re-key devices and entities of renamed cameras; returns how many cameras.
+
+    Call before the platforms load. The device under the old id keeps its
+    entity ids, history and customisations; a duplicate that an earlier
+    version of this integration created under the new id is removed.
+    """
+    devices = dr.async_get(hass)
+    entities = er.async_get(hass)
+    pairs = renamed_cameras(hass, uid, data)
+    for old, new in pairs:
+        device = devices.async_get_device(identifiers={camera_identifier(uid, old)})
+        assert device is not None
+        if dup := devices.async_get_device(identifiers={camera_identifier(uid, new)}):
+            for ent in er.async_entries_for_device(entities, dup.id, include_disabled_entities=True):
+                entities.async_remove(ent.entity_id)
+            devices.async_remove_device(dup.id)
+        prefix = f"{uid}_{old}_"
+        for ent in er.async_entries_for_device(entities, device.id, include_disabled_entities=True):
+            if ent.unique_id.startswith(prefix):
+                entities.async_update_entity(
+                    ent.entity_id, new_unique_id=f"{uid}_{new}_{ent.unique_id[len(prefix):]}"
+                )
+        devices.async_update_device(device.id, new_identifiers={camera_identifier(uid, new)})
+    return len(pairs)
 
 
 @callback

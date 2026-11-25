@@ -33,7 +33,7 @@ from .const import (
     RECORDER_MODEL,
 )
 from .coordinator import AuviCoordinator
-from .entity import ensure_camera_devices
+from .entity import ensure_camera_devices, migrate_renamed_cameras, renamed_cameras
 from .events import AuviEventBridge
 from .panel import PanelSession, async_maybe_remove_panel, async_setup_panel
 
@@ -114,6 +114,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: AuviConfigEntry) -> bool
         client=client, coordinator=coordinator, uid=uid, hub_device_id=hub.id, events=events
     )
 
+    if moved := migrate_renamed_cameras(hass, uid, coordinator.data):
+        LOGGER.info("%s renamed %d cameras; their entities follow the new ids", entry.title, moved)
+
     # Camera devices are created here (and refreshed on every poll) so the
     # link to the recorder is made from the integration's own code.
     ensure_camera_devices(hass, entry, uid, hub.id, coordinator.data)
@@ -129,6 +132,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: AuviConfigEntry) -> bool
 
     @callback
     def _on_poll() -> None:
+        if renamed_cameras(hass, uid, coordinator.data):
+            # Renamed while we run: the migration happens at setup.
+            hass.config_entries.async_schedule_reload(entry.entry_id)
+            return
         ensure_camera_devices(hass, entry, uid, hub.id, coordinator.data)
         entry.async_create_background_task(
             hass, events.async_sync_rules(coordinator.data), f"{DOMAIN} rule sync"
