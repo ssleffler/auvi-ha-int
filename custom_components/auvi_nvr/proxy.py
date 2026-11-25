@@ -72,8 +72,22 @@ EVENT_STREAM = "text/event-stream"
 _PATH_RE = re.compile(rb'(?P<q>["\'`(=])/(?P<p>api|local|hls|whep)/')
 
 # (method, path without leading slash) → handled locally.
-INTERCEPT_LOGOUT = {("POST", "api/v1/local/logout"), ("POST", "api/v1/local/logout-all")}
+INTERCEPT_LOGOUT = {
+    ("POST", "api/v1/local/logout"), ("POST", "api/v1/local/logout-all"),
+    ("POST", "api/v1/auth/logout"),
+}
 INTERCEPT_NOOP = {("POST", "api/v1/local/login")}
+# The recorder's viewer page (the Auvi Video Player, recorder 26.11) keeps
+# its own session: a refresh token in localStorage, exchanged at these
+# routes. The panel session is the login here, so the page gets a
+# placeholder (never the admin bearer, which this proxy adds upstream).
+INTERCEPT_SESSION = {("POST", "api/v1/auth/login"), ("POST", "api/v1/auth/refresh")}
+PANEL_TOKEN = "home-assistant-panel"
+VIEWER_MARKER = b"early-auth.js"
+VIEWER_SEED = (
+    b'<script>try{localStorage.setItem("auvi.refresh_token","' + PANEL_TOKEN.encode()
+    + b'");localStorage.setItem("auvi.auth_provider","local")}catch(e){}</script>'
+)
 INTERCEPT_FORBIDDEN = {("PUT", "api/v1/local/admin-password")}
 
 REAUTH_HTML = """<!doctype html>
@@ -93,6 +107,16 @@ def rewrite_body(data: bytes, prefix: bytes, origin: bytes) -> bytes:
     if origin:
         out = out.replace(origin + b"/", prefix + b"/")
     return out
+
+
+def seed_viewer_session(html: bytes) -> bytes:
+    """Give the viewer page its placeholder session before its scripts run."""
+    if VIEWER_MARKER not in html:
+        return html
+    head = re.search(rb"<head[^>]*>", html)
+    if head is None:
+        return html
+    return html[: head.end()] + VIEWER_SEED + html[head.end():]
 
 
 def rewrite_location(value: str, prefix: str, origin: str) -> str:
@@ -220,7 +244,11 @@ class AuviProxyView(HomeAssistantView):
             return web.json_response({"error": "panel_session_required"}, status=401)
 
         method = request.method.upper()
-        key = (method, path.strip("/"))
+        api_path = path.strip("/")
+        # The viewer page's requests are relative to it: /local/api/… is /api/….
+        if api_path.startswith("local/api/"):
+            api_path = api_path[len("local/"):]
+        key = (method, api_path)
         if key in INTERCEPT_LOGOUT:
             sid = request.cookies.get(COOKIE_NAME)
             if sid:
@@ -228,6 +256,11 @@ class AuviProxyView(HomeAssistantView):
             resp = web.Response(status=204)
             resp.del_cookie(COOKIE_NAME, path=prefix + "/")
             return resp
+        if key in INTERCEPT_SESSION:
+            return web.json_response(
+                {"token": PANEL_TOKEN, "refresh_token": PANEL_TOKEN},
+                headers={"Cache-Control": "no-store"},
+            )
         if key in INTERCEPT_NOOP:
             return web.Response(status=204)
         if key in INTERCEPT_FORBIDDEN:
@@ -317,8 +350,10 @@ class AuviProxyView(HomeAssistantView):
             return web.Response(status=upstream.status, headers=headers)
         bprefix, borigin = prefix.encode(), origin.encode()
         if rewriting:
-            raw = await upstream.read()
-            return web.Response(status=upstream.status, body=rewrite_body(raw, bprefix, borigin), headers=headers)
+            body = rewrite_body(await upstream.read(), bprefix, borigin)
+            if ctype.startswith("text/html"):
+                body = seed_viewer_session(body)
+            return web.Response(status=upstream.status, body=body, headers=headers)
 
         stream = web.StreamResponse(status=upstream.status, headers=headers)
         await stream.prepare(request)
